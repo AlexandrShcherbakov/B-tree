@@ -34,6 +34,8 @@ struct DB{
     struct DBT dbt;
     struct BT_node *root;
     FILE *fl;
+    int *pg;
+    int pages;
 }; /* Need for supporting multiple backends (HASH/BTREE) */
 
 struct DB *dbcreate(const char *file, const struct DBC conf);

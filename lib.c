@@ -6,14 +6,19 @@ dbcreate(const char *file, const struct DBC conf)
     struct DB *db = malloc(sizeof(*db));
     db->fl = fopen(file, "w+");
     db->conf = conf;
+}
+
+struct BT_node *
+block_alloc()
+{
 
 }
 
-int
-keycmp(const struct DBT *a, const struct DBT *b)
+/*int
+keycmp(const struct DBT a, const struct DBT b)
 {
-    int s = a->size > b->size ? b->size : a->size;
-    return memcmp(a, b, s);
+    int s = a.size > b.size ? b.size : a.size;
+    return memcmp(a.data, b.data, s);
 }
 
 int
@@ -94,18 +99,18 @@ split_child(struct BT_node *x, struct BT_node *y, int iter)
 }
 
 int
-put_node(struct BT_node *x, struct DBT *key, struct DBT *data)
+put_node(struct BT_node *x, struct DBT key, struct DBT *data)
 {
     int i = x->size;
     if (x->isleaf) {
-        while (i >= 0 && keycmp(key, x->keys[i]) < 0) {
+        while (i >= 0 && keycmp(key, x->keys[i].key) < 0) {
             x->keys[i + 1] = x->keys[i];
             i--;
         }
-        x->keys[i + 1] = key;
+        x->keys[i + 1].key = key;
         x->size++;
     } else {
-        while (i >= 0 && keycmp(key, x->keys[i]) < 0) {
+        while (i >= 0 && keycmp(key, x->keys[i].key) < 0) {
             i--;
         }
         i++;
@@ -130,4 +135,4 @@ db_put(const struct DB *db, struct DBT *key, const struct DBT *data)
         db->root = split_child(root, root, 0);
     }
     return put_node(root, key, data);
-}
+}*/
