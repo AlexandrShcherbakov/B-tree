@@ -157,7 +157,11 @@ struct DBBlock *read_block(const struct DB *db, int page) {
 int keycmp(const struct DBT *a, const struct DBT *b)
 {
     int s = a->size > b->size ? b->size : a->size;
-    return memcmp(a->data, b->data, s);
+    int res = memcmp(a->data, b->data, s);
+    if (res == 0) {
+        return a->size - b->size;
+    }
+    return res;
 }
 void printblock(const struct DB *db, int xindex, int height);
 /*Function put key*/
