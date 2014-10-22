@@ -185,13 +185,18 @@ int split_child(const struct DB *db, int xindex, int yindex, int iter)
     }
     if (!z->isleaf) {
         for (int i = 0; i < db->t; ++i) {
-            z->childs_pages[i] = y->childs_pages[i + db->t + 1];
+            z->childs_pages[i] = y->childs_pages[i + db->t];
         }
     }
     y->size = db->t - 1;
     struct DBBlock *x;
     if (xindex != yindex) {
         x = read_block(db, xindex);
+        if (x->size == db->t * 2 - 1) {
+            xindex = split_child(db, xindex, xindex, 0);
+            free_var(x);
+            x = read_block(db, xindex);
+        }
         for (int i = x->size + 1; i > iter + 1; --i) {
             x->childs_pages[i] = x->childs_pages[i - 1];
         }
@@ -213,9 +218,9 @@ int split_child(const struct DB *db, int xindex, int yindex, int iter)
         x->keys = malloc(sizeof(*x->keys) * (2 * db->t - 1));
         x->childs_pages = malloc(sizeof(*x->childs_pages) * 2 * db->t);
         x->size = 1;
-        x->keys[0] = y->keys[db->t - 1];
         x->childs_pages[0] = yindex;
         x->childs_pages[1] = zindex;
+        x->keys[0] = y->keys[db->t - 1];
     }
     int result = xindex;
     if (write_block(db, x, xindex) == -1) result = -1;
@@ -240,40 +245,51 @@ int put_node(const struct DB *db, int xindex, const struct DBT *key, const struc
     } else {
         x = read_block(db, xindex);
     }
-    if (x->isleaf && x->size == db->t * 2 - 1) {
-        xindex = split_child(db, xindex, xindex, db->t);
-        free_var(x);
-        x = read_block(db, xindex);
+    if (x->size < 0) {
+        exit(0);
     }
+    if (x->size == db->t * 2 - 1 && xindex == *db->root) {
+        free_var(x);
+        *db->root = xindex = split_child(db, xindex, xindex, 0);
+        x = read_block(db, xindex);
+        //printblock(db, xindex, 0);
+    }
+    //printf("bah\n");
     if (*db->root == -1) {
         *db->root = xindex;
     }
-    int i = x->size;
-    if (x->isleaf) {
-        while (i > 0 && keycmp(key, &x->keys[i - 1].key) < 0) {
-            x->keys[i] = x->keys[i - 1];
-            i--;
-        }
-        x->keys[i].key = *key;
+    int i;
+    for (i = x->size - 1; i >= 0 && keycmp(key, &x->keys[i].key) < 0; --i) {}
+    if (i >= 0 && keycmp(key, &x->keys[i].key) == 0) {
         x->keys[i].data = *data;
-        x->size++;
     } else {
-        i--;
-        while (i >= 0 && keycmp(key, &x->keys[i].key) < 0) {
-            i--;
-        }
-        i++;
-        struct DBBlock *y = read_block(db, x->childs_pages[i]);
-        if (y->size == 2 * db->t - 1) {
-            xindex = split_child(db, xindex, x->childs_pages[i], i);
-            free_var(x);
-            x = read_block(db, xindex);
-            if (keycmp(key, &x->keys[i].key) > 0) {
-                i++;
+        i = x->size;
+        if (x->isleaf) {
+            while (i > 0 && keycmp(key, &x->keys[i - 1].key) < 0) {
+                x->keys[i] = x->keys[i - 1];
+                i--;
             }
+            x->keys[i].key = *key;
+            x->keys[i].data = *data;
+            x->size++;
+        } else {
+            i--;
+            while (i >= 0 && keycmp(key, &x->keys[i].key) < 0) {
+                i--;
+            }
+            i++;
+            struct DBBlock *y = read_block(db, x->childs_pages[i]);
+            if (y->size == 2 * db->t - 1) {
+                xindex = split_child(db, xindex, x->childs_pages[i], i);
+                free_var(x);
+                x = read_block(db, xindex);
+                if (keycmp(key, &x->keys[i].key) > 0) {
+                    i++;
+                }
+            }
+            free_var(y);
+            put_node(db, x->childs_pages[i], key, data);
         }
-        free_var(y);
-        put_node(db, x->childs_pages[i], key, data);
     }
     int result = xindex;
     if (write_block(db, x, xindex) == -1) result = -1;
@@ -282,7 +298,16 @@ int put_node(const struct DB *db, int xindex, const struct DBT *key, const struc
 }
 
 int put(const struct DB *db, const struct DBT *key, const struct DBT *data) {
+    /*if (strcmp("Palatine Bridge", (char *)key->data) == 0) {
+        //printblock(db, *db->root, 0);
+    }*/
+    //puts((char *)key->data);
+    //printblock(db, *db->root, 0);
     *db->root = put_node(db, *db->root, key, data);
+    /*if (strcmp("Palatine Bridge", (char *)key->data) == 0) {
+        printblock(db, *db->root, 0);
+    return 0;
+    }*/
     return *db->root;
 }
 
@@ -592,9 +617,9 @@ int getfromblock(const struct DB *db, int xindex, const struct DBT *key, struct 
 int get(const struct DB *db, const struct DBT *key, struct DBT *data)
 {
     /*puts((char *)key->data);
-    printf("\n");
-    if (strcmp((char *)key->data, "Din Muhammad Unar") == 0) {
+    if (strcmp((char *)key->data, "Yagongchong") == 0) {
         printblock(db, *db->root, 0);
+        return 0;
     }*/
     return getfromblock(db, *db->root, key, data);
 }
