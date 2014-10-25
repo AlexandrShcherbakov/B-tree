@@ -1,5 +1,7 @@
 #include "mydb.h"
 
+#define OK printf("OK\n");
+
 int db_close(struct DB *db) {
 	return db->close(db);
 }
@@ -294,7 +296,7 @@ int put_node(const struct DB *db, int xindex, const struct DBT *key, const struc
     int result = xindex;
     if (write_block(db, x, xindex) == -1) result = -1;
     free_var(x);
-    return xindex;
+    return result;
 }
 
 int put(const struct DB *db, const struct DBT *key, const struct DBT *data) {
@@ -441,67 +443,54 @@ int delblock(const struct DB *db, int xindex, struct DBT key, struct DBKey *node
     }
     struct DBBlock *x = read_block(db, xindex);
     int i;
+    //Part 1
     for (i = 0; i < x->size && keycmp(&key, &x->keys[i].key) > 0; ++i) {};
-    if (i >= x->size) {
+    if (i < x->size && keycmp(&key, &x->keys[i].key) == 0) {
         if (x->isleaf) {
-            node->key.size = -1;
-            return -1;
-        }
-        x->childs_pages[i] = delblock(db, x->childs_pages[i], key, node);
-        write_block(db, x, xindex);
-        free_var(x);
-        return xindex;
-    }
-    if (i < x->size) {
-        if (keycmp(&key, &x->keys[i].key) == 0) {
-            if (x->isleaf) {
-                *node = x->keys[i];
-                free(x->keys[i].key.data);
-                free(x->keys[i].data.data);
-                x->size--;
-                for (; i < x->size; ++i) {
-                    x->keys[i] = x->keys[i + 1];
-                }
-                write_block(db, x, xindex);
-                free_var(x);
-                return xindex;
+            *node = x->keys[i];
+            x->size--;
+            for (; i < x->size; ++i) {
+                x->keys[i] = x->keys[i + 1];
             }
-            int yindex = x->childs_pages[i];
-            struct DBBlock *y = read_block(db, yindex);
-            if (y->size >= db->t) {
-                struct DBKey tmpnd;
-                struct DBT tmpk;
-                getmax(db, yindex, &tmpk);
-                x->childs_pages[i] = delblock(db, yindex, tmpk, &tmpnd);
-                *node = x->keys[i];
-                x->keys[i] = tmpnd;
-                write_block(db, x, xindex);
-                free_var(x);
-                free_var(y);
-                return xindex;
-            }
-            int zindex = x->childs_pages[i + 1];
-            struct DBBlock *z = read_block(db, zindex);
-            if (z->size >= db->t) {
-                struct DBKey tmpnd;
-                struct DBT tmpk;
-                getmin(db, zindex, &tmpk);
-                x->childs_pages[i + 1] = delblock(db, zindex, tmpk, &tmpnd);
-                *node = x->keys[i];
-                x->keys[i] = tmpnd;
-                write_block(db, x, xindex);
-                free_var(x);
-                free_var(z);
-                free_var(y);
-                return xindex;
-            }
-            xindex = mergesmallnodes(db, xindex, i);
+            write_block(db, x, xindex);
             free_var(x);
-            free_var(y);
-            free_var(z);
-            xindex = delblock(db, xindex, key, node);
             return xindex;
         }
+        int yindex = x->childs_pages[i];
+        struct DBBlock *y = read_block(db, yindex);
+        if (y->size >= db->t) {
+            struct DBKey tmpnd;
+            struct DBT tmpk;
+            getmax(db, yindex, &tmpk);
+            x->childs_pages[i] = delblock(db, yindex, tmpk, &tmpnd);
+            *node = x->keys[i];
+            x->keys[i] = tmpnd;
+            write_block(db, x, xindex);
+            free_var(x);
+            free_var(y);
+            return xindex;
+        }
+        int zindex = x->childs_pages[i + 1];
+        struct DBBlock *z = read_block(db, zindex);
+        if (z->size >= db->t) {
+            struct DBKey tmpnd;
+            struct DBT tmpk;
+            getmin(db, zindex, &tmpk);
+            x->childs_pages[i + 1] = delblock(db, zindex, tmpk, &tmpnd);
+            *node = x->keys[i];
+            x->keys[i] = tmpnd;
+            write_block(db, x, xindex);
+            free_var(x);
+            free_var(z);
+            free_var(y);
+            return xindex;
+        }
+        free_var(x);
+        free_var(y);
+        free_var(z);
+        xindex = mergesmallnodes(db, xindex, i);
+        xindex = delblock(db, xindex, key, node);
+        return xindex;
     }
     int yindex = x->childs_pages[i];
     struct DBBlock *y = read_block(db, yindex);
@@ -715,7 +704,7 @@ void printblock(const struct DB *db, int xindex, int height) {
     struct DBC conf;
     conf.chunk_size = 4 * 1024;
     conf.db_size = 512 * 1024 * 1024;
-    struct DB *db = dbcreate("db.txt", conf);
+    struct DB *db = dbcreate("db", conf);
     db_put(db, "ololo", 5, "sos", 3);
     db_put(db, "lol", 3, "so slow", 7);
     db_put(db, "key 1", 5, "data 1", 6);
@@ -727,17 +716,19 @@ void printblock(const struct DB *db, int xindex, int height) {
     db_put(db, "angel", 5, "good", 4);
     db_put(db, "uk", 2, "rf", 2);
     db_put(db, "size", 4, "toobig", 6);
+    printblock(db, *db->root, 0);
     db_del(db, "lol", 3);
     db_del(db, "devil", 5);
+    db_del(db, "ololo", 5);
     db_del(db, "uk", 2);
-    db_del(db, "kolhoz", 6);
     db_del(db, "key 1", 5);
     db_del(db, "sos", 3);
+    db_put(db, "uk", 2, "rf", 2);
     db_del(db, "angel", 5);
     db_del(db, "sneg", 4);
-    db_del(db, "ololo", 5);
+    db_del(db, "kolhoz", 6);
     db_del(db, "300", 3);
+    db_del(db, "size", 4);
     printblock(db, *db->root, 0);
     db_close(db);
-}
-*/
+}*/
