@@ -300,16 +300,7 @@ int put_node(const struct DB *db, int xindex, const struct DBT *key, const struc
 }
 
 int put(const struct DB *db, const struct DBT *key, const struct DBT *data) {
-    /*if (strcmp("Palatine Bridge", (char *)key->data) == 0) {
-        //printblock(db, *db->root, 0);
-    }*/
-    //puts((char *)key->data);
-    //printblock(db, *db->root, 0);
     *db->root = put_node(db, *db->root, key, data);
-    /*if (strcmp("Palatine Bridge", (char *)key->data) == 0) {
-        printblock(db, *db->root, 0);
-    return 0;
-    }*/
     return *db->root;
 }
 
@@ -626,8 +617,10 @@ int close(struct DB *db) {
 /*Create and open*/
 struct DB *dbcreate(const char *file, struct DBC conf)
 {
+    char buf[1024];
+    sprintf(buf, "%s/db", file);
     struct DB *res = malloc(sizeof(*res));
-    res->f = fopen(file, "w+");
+    res->f = fopen(buf, "w+");
     res->conf = conf;
     res->pages = calloc(conf.db_size / conf.chunk_size, 1);
     res->t = 25;
