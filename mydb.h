@@ -3,6 +3,11 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <list>
+#include <map>
+#include <algorithm>
+
+using namespace std;
 
 /* check `man dbopen` */
 struct DBT {
@@ -20,8 +25,8 @@ struct DBC {
 	 * */
         size_t chunk_size;
 	/* For future uses - maximum cached memory size
-	 * 16MB by default
-	 * size_t mem_size; */
+	 * 16MB by default */
+	    size_t mem_size;
 };
 
 struct DB {
@@ -35,7 +40,7 @@ struct DB {
 	 * caller.
 	 * * * * * * * * * * * * * */
 	int (*get)(const struct DB *db, const struct DBT *key, struct DBT *data);
-	int (*put)(const struct DB *db, const struct DBT *key, const struct DBT *data);
+	int (*put)(struct DB *db, const struct DBT *key, const struct DBT *data);
 	/* For future uses - sync cached pages with disk
 	 * int (*sync)(const struct DB *db)
 	 * */
@@ -45,6 +50,8 @@ struct DB {
 	int *root;
 	struct DBC conf;
 	char *pages;
+	list<struct DBT> *times;
+	map<struct DBT, struct DBT> *cache;
 }; /* Need for supporting multiple backends (HASH/BTREE) */
 
 struct DBKey {

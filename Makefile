@@ -1,2 +1,2 @@
 all:
-	gcc mydb.c -shared -fPIC -o mydb.so -std=c99
+	g++ mydb.cpp -std=c++11 -shared -fPIC -o libmydb.so -fpermissive

@@ -27,7 +27,7 @@ int db_get(const struct DB *db, void *key, size_t key_len,
 	return rc;
 }
 
-int db_put(const struct DB *db, void *key, size_t key_len,
+int db_put(struct DB *db, void *key, size_t key_len,
 		void *val, size_t val_len) {
 	struct DBT keyt = {
 		.data = key,
@@ -105,7 +105,7 @@ Node template:
                     size of data bytes - data
 */
 int write_block(const struct DB *db, struct DBBlock *block, int page) {
-    int hyp_size = sizeof(block->isleaf) + sizeof(block->size) +
+    unsigned hyp_size = sizeof(block->isleaf) + sizeof(block->size) +
                     (block->size + 1) * sizeof(*block->childs_pages);
     for (int i = 0; i < block->size; ++i) {
         hyp_size += block->keys[i].key.size + block->keys[i].data.size +
@@ -168,6 +168,17 @@ int keycmp(const struct DBT *a, const struct DBT *b)
     }
     return res;
 }
+
+bool operator== (struct DBT a, struct DBT b)
+{
+    return keycmp(&a, &b) == 0;
+}
+
+bool operator< (struct DBT a, struct DBT b)
+{
+    return keycmp(&a, &b) < 0;
+}
+
 void printblock(const struct DB *db, int xindex, int height);
 /*Function put key*/
 int split_child(const struct DB *db, int xindex, int yindex, int iter)
@@ -234,7 +245,7 @@ int split_child(const struct DB *db, int xindex, int yindex, int iter)
     return result;
 }
 
-int put_node(const struct DB *db, int xindex, const struct DBT *key, const struct DBT *data)
+int put_node(struct DB *db, int xindex, const struct DBT *key, const struct DBT *data)
 {
     struct DBBlock *x;
     if (xindex == -1) {
@@ -299,7 +310,10 @@ int put_node(const struct DB *db, int xindex, const struct DBT *key, const struc
     return result;
 }
 
-int put(const struct DB *db, const struct DBT *key, const struct DBT *data) {
+int put(struct DB *db, const struct DBT *key, const struct DBT *data) {
+    if (db->cache->find(*key) != db->cache->end()) {
+        (*db->cache)[*key] = *data;
+    }
     *db->root = put_node(db, *db->root, key, data);
     return *db->root;
 }
@@ -556,6 +570,10 @@ int delblock(const struct DB *db, int xindex, struct DBT key, struct DBKey *node
 }
 
 int delet(const struct DB *db, const struct DBT *key) {
+    if (db->cache->find(*key) != db->cache->end()) {
+        db->cache->erase(*key);
+        db->times->remove(*key);
+    }
     struct DBKey tmp;
     *db->root = delblock(db, *db->root, *key, &tmp);
     if (tmp.key.size == -1) {
@@ -596,12 +614,21 @@ int getfromblock(const struct DB *db, int xindex, const struct DBT *key, struct 
 
 int get(const struct DB *db, const struct DBT *key, struct DBT *data)
 {
-    /*puts((char *)key->data);
-    if (strcmp((char *)key->data, "Yagongchong") == 0) {
-        printblock(db, *db->root, 0);
+    find(db->times->begin(), db->times->end(), *key);
+    if (db->cache->find(*key) != db->cache->end()) {
+        db->times->remove(*key);
+        db->times->push_front(*key);
+        *data = (*db->cache)[*key];
         return 0;
-    }*/
-    return getfromblock(db, *db->root, key, data);
+    }
+    int res = getfromblock(db, *db->root, key, data);
+    if (db->times->size() == db->conf.mem_size) {
+        db->cache->erase(db->times->back());
+        db->times->pop_back();
+    }
+    (*db->cache)[*key] = *data;
+    db->times->push_front(*key);
+    return res;
 }
 
 /*Close DB*/
@@ -619,8 +646,9 @@ struct DB *dbcreate(const char *file, struct DBC conf)
 {
     char buf[1024];
     sprintf(buf, "%s/db", file);
-    struct DB *res = malloc(sizeof(*res));
-    res->f = fopen(buf, "w+");
+    struct DB *res = calloc(sizeof(*res), 1);
+    //res->f = fopen(buf, "w+");
+    res->f = fopen(file, "w+");
     res->conf = conf;
     res->pages = calloc(conf.db_size / conf.chunk_size, 1);
     res->t = 25;
@@ -630,6 +658,8 @@ struct DB *dbcreate(const char *file, struct DBC conf)
     res->get = &get;
     res->del = &delet;
     res->close = &close;
+    res->cache = new map<struct DBT, struct DBT>();
+    res->times = new list<struct DBT>();
     return res;
 }
 
@@ -697,6 +727,7 @@ void printblock(const struct DB *db, int xindex, int height) {
     struct DBC conf;
     conf.chunk_size = 4 * 1024;
     conf.db_size = 512 * 1024 * 1024;
+    conf.mem_size = 10;
     struct DB *db = dbcreate("db", conf);
     db_put(db, "ololo", 5, "sos", 3);
     db_put(db, "lol", 3, "so slow", 7);
@@ -709,11 +740,29 @@ void printblock(const struct DB *db, int xindex, int height) {
     db_put(db, "angel", 5, "good", 4);
     db_put(db, "uk", 2, "rf", 2);
     db_put(db, "size", 4, "toobig", 6);
-    printblock(db, *db->root, 0);
+    char *s[] = {"ololo", "lol", "key 1", "sos", "sneg", "300", "kolhoz", "devil", "angel", "uk", "size"};
+    for (int i = 0; i < 30; ++i) {
+        int k = rand() % 11;
+        char *str = malloc(300);
+        int len;
+        db_get(db, s[k], strlen(s[k]), (void **)&str, &len);
+        printf("%s: ", s[k]);
+        puts(str);
+    }
+    printf("\n");
+    db_del(db, "size", 4);
+    db_del(db, "uk", 2);
+    for (int i = 0; i < 30; ++i) {
+        int k = rand() % 9;
+        char *str = malloc(300);
+        int len;
+        db_get(db, s[k], strlen(s[k]), (void **)&str, &len);
+        printf("%s: ", s[k]);
+        puts(str);
+    }
     db_del(db, "lol", 3);
     db_del(db, "devil", 5);
     db_del(db, "ololo", 5);
-    db_del(db, "uk", 2);
     db_del(db, "key 1", 5);
     db_del(db, "sos", 3);
     db_put(db, "uk", 2, "rf", 2);
@@ -721,7 +770,7 @@ void printblock(const struct DB *db, int xindex, int height) {
     db_del(db, "sneg", 4);
     db_del(db, "kolhoz", 6);
     db_del(db, "300", 3);
-    db_del(db, "size", 4);
     printblock(db, *db->root, 0);
     db_close(db);
-}*/
+}
+*/
