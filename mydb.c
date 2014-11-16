@@ -1,13 +1,18 @@
 #include "mydb.h"
 
 #define OK printf("OK\n");
+#define FLAG printf("%d\n", flag);
+
+static int flag = 0;
 
 //Declaration of functions
 void put_in_cache(struct DB *db, struct DBBlock *block, int index);
 void add_to_cache(struct DB *db, struct DBBlock *block, int index);
 struct cacheList *index_in_cache(struct DB *db, int index);
 void insert_element_in_front(struct DB *db, struct cacheList *iter);
-void remove_from_cache(struct DB *db, int index, struct cacheList *iter);
+void remove_from_cache(struct DB *db, int index, struct cacheList *iter );
+void printblock(struct DB *db, int xindex, int height);
+int printsize(struct DB *db, int xindex, int height);
 
 int db_close(struct DB *db) {
 	return db->close(db);
@@ -49,6 +54,7 @@ int db_put(struct DB *db, void *key, size_t key_len,
 /* Functions allocate and free for blocks.*/
 int block_alloc(struct DB *db) {
     int page_count = db->conf.db_size / db->conf.chunk_size;
+    //printf("%u\n", (unsigned)db->conf.chunk_size);
     for (int i = 0; i < page_count; ++i) {
         if (db->pages[i] != CHAR_MAX) {
             int index = 0;
@@ -74,14 +80,10 @@ int free_var(struct DBBlock *block) {
     if (!block) {
         return -1;
     }
-    if (!block->isleaf) {
+    /*if (!block->isleaf) {
         free(block->childs_pages);
-    }
-    /*for (int i = 0; i < block->size; ++i) {
-        free(block->keys[i].key.data);
-        free(block->keys[i].data.data);
     }*/
-    free(block->keys);
+    //free(block->keys);
     free(block);
     return 0;
 }
@@ -140,13 +142,16 @@ int write_block_indb(struct DB *db, struct DBBlock *block, int page) {
     return 0;
 }
 
-struct DBBlock *read_block(struct DB *db, int page) {
+struct DBBlock *read_block(struct DB *db, int page)
+{
     struct cacheList *iter = index_in_cache(db, page);
     if (iter != NULL) {
         insert_element_in_front(db, iter);
-        return db->cacheContainer + iter->index_in_cache;
+        struct DBBlock *tmp = calloc(sizeof(*tmp), 1);
+        *tmp = db->cacheContainer[iter->id];
+        return tmp;
     }
-    struct DBBlock *block = malloc(sizeof(*block));
+    struct DBBlock *block = calloc(sizeof(*block), 1);
     fseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);
     fread(&block->isleaf, sizeof(block->isleaf), 1, db->f);
     fread(&block->size, sizeof(block->size), 1, db->f);
@@ -168,7 +173,7 @@ struct DBBlock *read_block(struct DB *db, int page) {
         field->data = malloc(field->size);
         fread(field->data, field->size, 1, db->f);
     }
-    if (db->pagesInCache < db->conf.mem_size) {
+    if (db->pagesInCache < db->mem_size) {
         add_to_cache(db, block, page);
     } else {
         put_in_cache(db, block, page);
@@ -180,6 +185,15 @@ struct DBBlock *read_block(struct DB *db, int page) {
 //Functions for list
 void insert_element_in_front(struct DB *db, struct cacheList *iter)
 {
+    /*if (1) {
+        printf("insert before:\n");
+        struct cacheList *i;
+        for (i = db->cacheListBegin; i != NULL; i = i->next) {
+            printf("%p %d %p\n", i->perv, i->index_in_cache, i->next);
+        }
+        i = db->cacheListEnd;
+        printf("%p %d %p\n", i->perv, i->index_in_cache, i->next);
+    }*/
     if (iter == db->cacheListBegin) {
         return;
     }
@@ -191,14 +205,25 @@ void insert_element_in_front(struct DB *db, struct cacheList *iter)
     }
     iter->next = db->cacheListBegin;
     iter->perv = NULL;
+    db->cacheListBegin->perv = iter;
     db->cacheListBegin = iter;
+    /*if (1) {
+        printf("insert after:\n");
+        struct cacheList *i;
+        for (i = db->cacheListBegin; i != NULL; i = i->next) {
+            printf("%p %d %p\n", i->perv, i->index_in_cache, i->next);
+        }
+        i = db->cacheListEnd;
+        printf("%p %d %p\n", i->perv, i->index_in_cache, i->next);
+    }*/
 }
 
 struct cacheList *index_in_cache(struct DB *db, int index)
 {
     struct cacheList *iter = db->cacheListBegin;
     for (; iter != NULL; iter = iter->next) {
-        if (db->cacheIndex[iter->index_in_cache] == index) {
+        //printf("%p %d %p\n", iter->perv, db->cacheIndex[iter->index_in_cache], iter->next);
+        if (db->cacheIndex[iter->id] == index) {
             return iter;
         }
     }
@@ -207,45 +232,92 @@ struct cacheList *index_in_cache(struct DB *db, int index)
 
 void add_to_cache(struct DB *db, struct DBBlock *block, int index)
 {
+    /*if (1) {
+        printf("add before:\n");
+        struct cacheList *iter;
+        for (iter = db->cacheListBegin; iter != NULL; iter = iter->next) {
+            printf("%p %d %p\n", iter->perv, iter->index_in_cache, iter->next);
+        }
+        iter = db->cacheListEnd;
+        if (iter != NULL)
+            printf("%p %d %p\n", iter->perv, iter->index_in_cache, iter->next);
+    }*/
     db->cacheContainer[db->pagesInCache] = *block;
     db->cacheIndex[db->pagesInCache] = index;
     struct cacheList *newBegin = calloc(sizeof(*newBegin), 1);
-    newBegin->index_in_cache = db->pagesInCache;
+    newBegin->id = db->pagesInCache;
     newBegin->next = db->cacheListBegin;
     newBegin->perv = NULL;
     if (db->cacheListBegin != NULL) {
         db->cacheListBegin->perv = newBegin;
+    } else {
         db->cacheListEnd = newBegin;
     }
-    db->pagesInCache++;
     db->cacheListBegin = newBegin;
+    db->pagesInCache++;
+    /*if (1) {
+        printf("add after:\n");
+        struct cacheList *iter;
+        for (iter = db->cacheListBegin; iter != NULL; iter = iter->next) {
+            printf("%p %d %p\n", iter->perv, iter->index_in_cache, iter->next);
+        }
+        iter = db->cacheListEnd;
+        printf("%p %d %p\n", iter->perv, iter->index_in_cache, iter->next);
+    }*/
 }
 
 void update_in_cache(struct DB *db, struct DBBlock *block, struct cacheList *iter)
 {
-    db->cacheContainer[iter->index_in_cache] = *block;
+    db->cacheContainer[iter->id] = *block;
 }
 
 void put_in_cache(struct DB *db, struct DBBlock *block, int index)
 {
+    /*if (1) {
+        printf("put before:\n");
+        struct cacheList *iter;
+        for (iter = db->cacheListBegin; iter != NULL; iter = iter->next) {
+            printf("%p %d %p\n", iter->perv, iter->index_in_cache, iter->next);
+        }
+        iter = db->cacheListEnd;
+        printf("%p %d %p\n", iter->perv, iter->index_in_cache, iter->next);
+    }*/
     db->cacheListEnd->perv->next = NULL;
     struct cacheList *oldEnd = db->cacheListEnd;
     db->cacheListEnd = db->cacheListEnd->perv;
-    db->cacheContainer[oldEnd->index_in_cache] = *block;
-    db->cacheIndex[oldEnd->index_in_cache] = index;
+    db->cacheContainer[oldEnd->id] = *block;
+    db->cacheIndex[oldEnd->id] = index;
     oldEnd->perv = NULL;
     oldEnd->next = db->cacheListBegin;
+    db->cacheListBegin->perv = oldEnd;
     db->cacheListBegin = oldEnd;
+    /*if (1) {
+        printf("put after:\n");
+        struct cacheList *iter;
+        for (iter = db->cacheListBegin; iter != NULL; iter = iter->next) {
+            printf("%p %d %p\n", iter->perv, iter->index_in_cache, iter->next);
+        }
+        iter = db->cacheListEnd;
+        printf("%p %d %p\n", iter->perv, iter->index_in_cache, iter->next);
+    }*/
 }
 
 void remove_from_cache(struct DB *db, int index, struct cacheList *iter)
 {
-    write_block_indb(db, db->cacheContainer + index, db->cacheIndex[index]);
+    //write_block_indb(db, db->cacheContainer + index, db->cacheIndex[index]);
+    /*free(db->cacheContainer[index].keys);
+    free(db->cacheContainer[index].childs_pages);*/
     db->pagesInCache--;
-    for (int i = index; i < db->pagesInCache; ++i) {
-        db->cacheContainer[i] = db->cacheContainer[i + 1];
-        db->cacheIndex[i] = db->cacheIndex[i + 1];
+    struct cacheList *it;
+    int i = 0;
+    for (; i < db->pagesInCache && db->cacheIndex[i] != index; ++i) {}
+    db->cacheIndex[i] = db->cacheIndex[db->pagesInCache];
+    db->cacheContainer[i] = db->cacheContainer[db->pagesInCache];
+    it = db->cacheListBegin;
+    while(it->id != db->pagesInCache) {
+        it = it->next;
     }
+    it->id = i;
     if (iter != db->cacheListBegin) {
         iter->perv->next = iter->next;
     } else {
@@ -261,15 +333,16 @@ void remove_from_cache(struct DB *db, int index, struct cacheList *iter)
 int write_block(struct DB *db, struct DBBlock *block, int index)
 {
     struct cacheList *iter = index_in_cache(db, index);
-    if (iter == NULL) {
+    if (iter != NULL) {
         update_in_cache(db, block, iter);
     } else {
-        if (db->pagesInCache < db->conf.mem_size) {
+        if (db->pagesInCache < db->mem_size) {
             add_to_cache(db, block, index);
         } else {
             put_in_cache(db, block, index);
         }
     }
+    write_block_indb(db, block, index);
     return 0;
 }
 
@@ -284,7 +357,6 @@ int keycmp(struct DBT *a, struct DBT *b)
     return res;
 }
 
-void printblock(struct DB *db, int xindex, int height);
 /*Function put key*/
 int split_child(struct DB *db, int xindex, int yindex, int iter)
 {
@@ -370,9 +442,7 @@ int put_node(struct DB *db, int xindex, struct DBT *key, struct DBT *data)
         free_var(x);
         *db->root = xindex = split_child(db, xindex, xindex, 0);
         x = read_block(db, xindex);
-        //printblock(db, xindex, 0);
     }
-    //printf("bah\n");
     if (*db->root == -1) {
         *db->root = xindex;
     }
@@ -416,7 +486,8 @@ int put_node(struct DB *db, int xindex, struct DBT *key, struct DBT *data)
 }
 
 int put(struct DB *db, struct DBT *key, struct DBT *data) {
-    return *db->root;
+    int res = put_node(db, *db->root, key, data);
+    return res;
 }
 
 /*Delete block*/
@@ -598,6 +669,11 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
         xindex = delblock(db, xindex, key, node);
         return xindex;
     }
+    if (x->isleaf) {
+        free_var(x);
+        node->key.size = -1;
+        return xindex;
+    }
     int yindex = x->childs_pages[i];
     struct DBBlock *y = read_block(db, yindex);
     if (y->size >= db->t) {
@@ -671,7 +747,17 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
 }
 
 int delet(struct DB *db, struct DBT *key) {
-    return *db->root;
+    struct DBKey *data = calloc(sizeof(*data), 1);
+    //puts(key->data);
+    //printsize(db, *db->root, 0);
+    /*if (strcmp(key->data, "New Passage") == 0) {
+        printblock(db, *db->root, 0);
+    }*/
+    *db->root = delblock(db, *db->root, *key, data);
+    if (data->key.size == -1) {
+        return 1;
+    }
+    return 0;
 }
 
 /*Function of get data by key*/
@@ -728,6 +814,7 @@ struct DB *dbcreate(const char *file, struct DBC conf)
     res->f = fopen(buf, "w+");
     //res->f = fopen(file, "w+");
     res->conf = conf;
+    res->mem_size = 100;
     res->pages = calloc(conf.db_size / conf.chunk_size, 1);
     res->t = 25;
     res->root = malloc(sizeof(*res->root));
@@ -737,8 +824,8 @@ struct DB *dbcreate(const char *file, struct DBC conf)
     res->del = &delet;
     res->close = &close;
     res->pagesInCache = 0;
-    res->cacheContainer = calloc(sizeof(*res->cacheContainer), res->conf.mem_size);
-    res->cacheIndex = calloc(sizeof(int), res->conf.mem_size);
+    res->cacheContainer = calloc(sizeof(*res->cacheContainer), res->mem_size);
+    res->cacheIndex = calloc(sizeof(int), res->mem_size);
     res->cacheListBegin = NULL;
     res->cacheListEnd = res->cacheListBegin;
     return res;
@@ -758,6 +845,26 @@ struct DB *dbopen(const char *file, struct DBC conf) {
     res->get = &get;
     res->del = &delet;
     res->close = &close;
+    return res;
+}
+
+int printsize(struct DB *db, int xindex, int height)
+{
+    if (xindex == -1) return 0 ;
+    struct DBBlock *x = read_block(db, xindex);
+    int res = x->size;
+    if (!x->isleaf) {
+        for (int i = 0; i <= x->size; ++i) {
+            res += printsize(db, x->childs_pages[i], height + 1);
+        }
+    }
+    if (height == 0)  {
+        OK
+        for (int i = 0; i < height; ++i) {
+            printf("-");
+        }
+        printf("size: %d\n", res);
+    }
     return res;
 }
 
@@ -808,7 +915,6 @@ void printblock(struct DB *db, int xindex, int height) {
     struct DBC conf;
     conf.chunk_size = 4 * 1024;
     conf.db_size = 512 * 1024 * 1024;
-    conf.mem_size = 10;
     struct DB *db = dbcreate("db", conf);
     db_put(db, "ololo", 5, "sos", 3);
     db_put(db, "lol", 3, "so slow", 7);
@@ -829,6 +935,11 @@ void printblock(struct DB *db, int xindex, int height) {
         db_get(db, s[k], strlen(s[k]), (void **)&str, &len);
         printf("%s: ", s[k]);
         puts(str);
+        /*struct cacheList *iter = db->cacheListBegin;
+        for (; iter != NULL; iter = iter->next) {
+            printf("%p %d %p\n", iter->perv, iter->index_in_cache, iter->next);
+        }
+        //getchar();
     }
     printf("\n");
     db_del(db, "size", 4);
@@ -846,6 +957,7 @@ void printblock(struct DB *db, int xindex, int height) {
     db_del(db, "ololo", 5);
     db_del(db, "key 1", 5);
     db_del(db, "sos", 3);
+    //printblock(db, *db->root, 0);
     db_put(db, "uk", 2, "rf", 2);
     db_del(db, "angel", 5);
     db_del(db, "sneg", 4);
@@ -853,5 +965,5 @@ void printblock(struct DB *db, int xindex, int height) {
     db_del(db, "300", 3);
     printblock(db, *db->root, 0);
     db_close(db);
-}
-*/
+}*/
+
