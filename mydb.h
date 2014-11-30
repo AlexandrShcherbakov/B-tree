@@ -67,6 +67,7 @@ struct DBBlock {
 struct cacheList {
     struct cacheList *next, *perv;
     int id;
+    char info;
 };
 
 struct DB *dbcreate(const char *file, struct DBC conf);
