@@ -2,7 +2,7 @@
 
 #define OK printf("OK\n");
 #define FLAG printf("%d\n", flag);
-#define OPCACHE 3
+#define OPCACHE 100
 #define ISDIRTY(x) (x->info & 1)
 #define SETPAGESTATE(x, y) (x->info = x->info | y)
 #define DELPAGE(x) (x->info = x->info | 1)
@@ -784,12 +784,12 @@ struct DB *dbcreate(const char *file, struct DBC conf)
     char buf[1024];
     sprintf(buf, "%s/db", file);
     struct DB *res = calloc(sizeof(*res), 1);
-    //res->f = fopen(buf, "w+");
-    res->f = fopen(file, "w+");
+    res->f = fopen(buf, "w+");
+    //res->f = fopen(file, "w+");
     res->conf = conf;
-    res->mem_size = 3;
+    res->mem_size = 100;
     res->pages = calloc(conf.db_size / conf.chunk_size, 1);
-    res->t = 2;
+    res->t = 25;
     res->root = malloc(sizeof(*res->root));
     *res->root = -1;
     res->put = &put;
@@ -884,7 +884,7 @@ void printblock(struct DB *db, int xindex, int height) {
     printf("\n");
 }
 
-int main(void) {
+/*int main(void) {
     struct DBC conf;
     conf.chunk_size = 4 * 1024;
     conf.db_size = 512 * 1024 * 1024;
@@ -935,5 +935,4 @@ int main(void) {
     db_del(db, "300", 3);
     printblock(db, *db->root, 0);
     db_close(db);
-}
-
+}*/
