@@ -91,10 +91,10 @@ int free_var(struct DBBlock *block) {
 /*Functions for write db-information and work with offset of it.*/
 int write_dbinf(struct DB *db)
 {
-    fseek(db->f, 0, SEEK_SET);
-    fwrite(db->root, sizeof(*db->root), 1, db->f);
-    fwrite(&db->conf, sizeof(db->conf), 1, db->f);
-    fwrite(db->pages, sizeof(*db->pages), db->conf.db_size / db->conf.chunk_size, db->f);
+    lseek(db->f, 0, SEEK_SET);
+    write(db->f, db->root, sizeof(*db->root));
+    write(db->f, &db->conf, sizeof(db->conf));
+    write(db->f, db->pages, sizeof(*db->pages) * (db->conf.db_size / db->conf.chunk_size));
     return 0;
 }
 
@@ -124,21 +124,20 @@ int write_block_indb(struct DB *db, struct DBBlock *block, int page) {
     if (hyp_size > db->conf.chunk_size) {
         return -1;
     }
-    //printf("%d\n", fseek(db->f, 0, SEEK_END));
-    fseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);
-    fwrite(&block->isleaf, sizeof(block->isleaf), 1, db->f);
-    fwrite(&block->size, sizeof(block->size), 1, db->f);
+    lseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);
+    write(db->f, &block->isleaf, sizeof(block->isleaf));
+    write(db->f, &block->size, sizeof(block->size));
     if (!block->isleaf) {
-        fwrite(block->childs_pages, sizeof(*block->childs_pages),
-                block->size + 1,db->f);
+        write(db->f, block->childs_pages, sizeof(*block->childs_pages) *
+                (block->size + 1));
     }
     for (int i = 0; i < block->size; ++i) {
         struct DBT *field = &block->keys[i].key;
-        fwrite(&field->size, sizeof(field->size), 1, db->f);
-        fwrite(field->data, field->size, 1, db->f);
+        write(db->f, &field->size, sizeof(field->size));
+        write(db->f, field->data, field->size);
         field = &block->keys[i].data;
-        fwrite(&field->size, sizeof(field->size), 1, db->f);
-        fwrite(field->data, field->size, 1, db->f);
+        write(db->f, &field->size, sizeof(field->size));
+        write(db->f, field->data, field->size);
     }
     return 0;
 }
@@ -153,26 +152,26 @@ struct DBBlock *read_block(struct DB *db, int page)
         return tmp;
     }
     struct DBBlock *block = calloc(sizeof(*block), 1);
-    fseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);
-    fread(&block->isleaf, sizeof(block->isleaf), 1, db->f);
-    fread(&block->size, sizeof(block->size), 1, db->f);
+    lseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);
+    read(db->f, &block->isleaf, sizeof(block->isleaf));
+    read(db->f, &block->size, sizeof(block->size));
     if (!block->isleaf) {
         block->childs_pages = calloc(db->t * 2,
                                         sizeof(*block->childs_pages));
-        fread(block->childs_pages, block->size + 1,
-                sizeof(*block->childs_pages), db->f);
+        read(db->f, block->childs_pages, (block->size + 1) *
+                sizeof(*block->childs_pages));
     }
     block->keys = calloc(db->t * 2 - 1, sizeof(*block->keys));
     for (int i = 0; i < block->size; ++i) {
         struct DBT *field;
         field = &block->keys[i].key;
-        fread(&field->size, sizeof(field->size), 1, db->f);
+        read(db->f, &field->size, sizeof(field->size));
         field->data = malloc(field->size);
-        fread(field->data, field->size, 1, db->f);
+        read(db->f, field->data, field->size);
         field = &block->keys[i].data;
-        fread(&field->size, sizeof(field->size), 1, db->f);
+        read(db->f, &field->size, sizeof(field->size));
         field->data = malloc(field->size);
-        fread(field->data, field->size, 1, db->f);
+        read(db->f, field->data, field->size);
     }
     if (db->pagesInCache < db->conf.mem_size) {
         add_to_cache(db, block, page);
@@ -797,9 +796,9 @@ int get(struct DB *db, struct DBT *key, struct DBT *data)
 }
 
 /*Close DB*/
-int close(struct DB *db) {
+int dbclose(struct DB *db) {
     write_dbinf(db);
-    fclose(db->f);
+    close(db->f);
     free(db->pages);
     free(db->root);
     free(db);
@@ -812,7 +811,7 @@ struct DB *dbcreate(const char *file, struct DBC conf)
     char buf[1024];
     sprintf(buf, "db/%s", file);
     struct DB *res = calloc(sizeof(*res), 1);
-    res->f = fopen("db", "w+");
+    res->f = open("db", O_RDWR | O_CREAT | O_APPEND);
     //res->f = fopen(file, "w+");
     res->conf = conf;
     res->pages = calloc(conf.db_size / conf.chunk_size, 1);
@@ -822,7 +821,7 @@ struct DB *dbcreate(const char *file, struct DBC conf)
     res->put = &put;
     res->get = &get;
     res->del = &delet;
-    res->close = &close;
+    res->close = &dbclose;
     res->pagesInCache = 0;
     res->cacheContainer = calloc(sizeof(*res->cacheContainer), res->conf.mem_size);
     res->cacheIndex = calloc(sizeof(int), res->conf.mem_size);
@@ -834,18 +833,18 @@ struct DB *dbcreate(const char *file, struct DBC conf)
 
 struct DB *dbopen(const char *file, struct DBC conf) {
     struct DB *res = malloc(sizeof(*res));
-    res->f = fopen(file, "r+");
-    fseek(res->f, 0, SEEK_SET);
+    res->f = open("db", O_RDWR | O_CREAT | O_APPEND);
+    lseek(res->f, 0, SEEK_SET);
     res->root = calloc(sizeof(*res->root), 1);
-    fread(res->root, sizeof(*res->root), 1, res->f);
-    fread(&res->conf, sizeof(res->conf), 1, res->f);
+    read(res->f, res->root, sizeof(*res->root));
+    read(res->f, &res->conf, sizeof(res->conf));
     res->pages = calloc(res->conf.db_size / res->conf.chunk_size, 1);
-    fread(res->pages, sizeof(*res->pages), res->conf.db_size / res->conf.chunk_size, res->f);
+    read(res->f, res->pages, sizeof(*res->pages) * (res->conf.db_size / res->conf.chunk_size));
     res->t = 25;
     res->put = &put;
     res->get = &get;
     res->del = &delet;
-    res->close = &close;
+    res->close = &dbclose;
     return res;
 }
 

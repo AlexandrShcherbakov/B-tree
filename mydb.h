@@ -3,6 +3,8 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 /* check `man dbopen` */
 struct DBT {
@@ -40,7 +42,7 @@ struct DB {
 	 * int (*sync)(const struct DB *db)
 	 * */
 	/* Private API */
-	FILE *f;
+	int f;
 	int t;
 	int *root;
 	struct DBC conf;
