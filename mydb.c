@@ -124,6 +124,7 @@ int write_block_indb(struct DB *db, struct DBBlock *block, int page) {
     if (hyp_size > db->conf.chunk_size) {
         return -1;
     }
+    //printf("%d\n", fseek(db->f, 0, SEEK_END));
     fseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);
     fwrite(&block->isleaf, sizeof(block->isleaf), 1, db->f);
     fwrite(&block->size, sizeof(block->size), 1, db->f);
@@ -173,7 +174,7 @@ struct DBBlock *read_block(struct DB *db, int page)
         field->data = malloc(field->size);
         fread(field->data, field->size, 1, db->f);
     }
-    if (db->pagesInCache < db->mem_size) {
+    if (db->pagesInCache < db->conf.mem_size) {
         add_to_cache(db, block, page);
     } else {
         put_in_cache(db, block, page);
@@ -336,7 +337,7 @@ int write_block(struct DB *db, struct DBBlock *block, int index)
     if (iter != NULL) {
         update_in_cache(db, block, iter);
     } else {
-        if (db->pagesInCache < db->mem_size) {
+        if (db->pagesInCache < db->conf.mem_size) {
             add_to_cache(db, block, index);
         } else {
             put_in_cache(db, block, index);
@@ -809,12 +810,11 @@ int close(struct DB *db) {
 struct DB *dbcreate(const char *file, struct DBC conf)
 {
     char buf[1024];
-    sprintf(buf, "%s/db", file);
+    sprintf(buf, "db/%s", file);
     struct DB *res = calloc(sizeof(*res), 1);
-    res->f = fopen(buf, "w+");
+    res->f = fopen("db", "w+");
     //res->f = fopen(file, "w+");
     res->conf = conf;
-    res->mem_size = 100;
     res->pages = calloc(conf.db_size / conf.chunk_size, 1);
     res->t = 25;
     res->root = malloc(sizeof(*res->root));
@@ -824,10 +824,11 @@ struct DB *dbcreate(const char *file, struct DBC conf)
     res->del = &delet;
     res->close = &close;
     res->pagesInCache = 0;
-    res->cacheContainer = calloc(sizeof(*res->cacheContainer), res->mem_size);
-    res->cacheIndex = calloc(sizeof(int), res->mem_size);
+    res->cacheContainer = calloc(sizeof(*res->cacheContainer), res->conf.mem_size);
+    res->cacheIndex = calloc(sizeof(int), res->conf.mem_size);
     res->cacheListBegin = NULL;
     res->cacheListEnd = res->cacheListBegin;
+    write_dbinf(res);
     return res;
 }
 

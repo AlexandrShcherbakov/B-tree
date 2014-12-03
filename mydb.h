@@ -21,7 +21,7 @@ struct DBC {
         size_t chunk_size;
 	/* For future uses - maximum cached memory size
 	 * 16MB by default */
-	    //size_t mem_size;
+	    size_t mem_size;
 };
 
 struct DB {
@@ -49,7 +49,7 @@ struct DB {
 	struct DBBlock *cacheContainer;
 	int *cacheIndex;
 	int pagesInCache;
-	int mem_size;
+	//int mem_size;
 }; /* Need for supporting multiple backends (HASH/BTREE) */
 
 struct DBKey {
