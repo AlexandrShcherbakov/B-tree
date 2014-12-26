@@ -7,22 +7,150 @@
 #define SETPAGESTATE(x, y) (x->info = x->info | y)
 #define DELPAGE(x) (x->info = x->info | 1)
 #define ISDELETED(x) (x->info & 2)
+#define LOG_TYPE(x) (logflag ? x : EMPTY_RECORD)
 
 static int ops = 0;
+static log_flag = 0;
 
 //Declaration of functions
 void put_in_cache(struct DB *db, struct DBBlock *block, int index);
 void add_to_cache(struct DB *db, struct DBBlock *block, int index);
 struct cacheList *index_in_cache(struct DB *db, int index);
 void insert_element_in_front(struct DB *db, struct cacheList *iter);
-void remove_from_cache(struct DB *db, int index, struct cacheList *iter );
+void remove_from_cache(struct DB *db, int index, struct cacheList *iter);
 void printblock(struct DB *db, int xindex, int height);
 int printsize(struct DB *db, int xindex, int height);
 void update_ops(struct DB *db);
+int write_block_indb(struct DB *db, struct DBBlock *block, int page);
+int log_seek(struct Log *log);
+struct DBBlock *read_block(struct DB *db, int page);
 
+/*Log API*/
+struct Log *log_open() {
+    struct Log *log = calloc(sizeof(struct Log), 1);
+    log->fd = fopen("log", "a+");
+    log_seek(log);
+    fseek(log->fd, 0, SEEK_END);
+    return log;
+}
+
+
+void log_close(struct Log *log)
+{
+    fclose(log->fd);
+}
+
+int log_write(struct Log *log, struct Record *rec)
+{
+    fprintf(log->fd, "%d", log->LSN);
+    fprintf(log->fd, "%c", rec->type);
+    fprintf(log->fd, "%d ", rec->page);
+    fprintf(log->fd, "%d ", rec->key->size);
+    fwrite(rec->key->data, rec->key->size, 1, log->fd);
+    if (rec->type != LOG_DELETE) {
+        fprintf(log->fd, " %d ", rec->data->size);
+        fwrite(rec->data->data, rec->data->size, 1, log->fd);
+    }
+    fprintf(log->fd, "\n");
+    fflush(log->fd);
+    log->LSN++;
+    return log->LSN;
+}
+
+int log_seek(struct Log *log)
+{
+    fseek(log->fd, 0, SEEK_END);
+    int label = 0;
+    fseek(log->fd, -sizeof(label) - 2, SEEK_END);
+    while (label != MAGIC_CONST && ftell(log->fd) > 0) {
+        fread(&label, sizeof(label), 1, log->fd);
+        fseek(log->fd, -sizeof(label) - 1, SEEK_CUR);
+        //fseek(log->fd, -1, SEEK_CUR);
+        fseek(log->fd, -1, SEEK_CUR);
+    }
+}
+
+struct Record *log_read(struct Log *log)
+{
+    struct Record *record = calloc(sizeof(struct Record), 1);
+    if (fscanf(log->fd, "%d", &log->LSN) != 1) {
+        return NULL;
+    }
+    record->LSN = log->LSN;
+    fscanf(log->fd, "%c", &record->type);
+    fscanf(log->fd, "%d", &record->page);
+    record->key = calloc(sizeof(record->key), 1);
+    fscanf(log->fd, "%d", &record->key->size);
+    fseek(log->fd, 1, SEEK_CUR);
+    record->key->data = calloc(record->key->size, 1);
+    fread(record->key->data, record->key->size, 1, log->fd);
+    if (record->type != LOG_DELETE) {
+        record->data = calloc(sizeof(record->data), 1);
+        fscanf(log->fd, "%d", &record->data->size);
+        fseek(log->fd, 1, SEEK_CUR);
+        record->data->data = calloc(record->data->size, 1);
+        fread(record->data->data, record->data->size, 1, log->fd);
+        fseek(log->fd, 1, SEEK_CUR);
+    }
+    return record;
+}
+
+int log_recovery (struct DB *db)
+{
+    log_flag = 1;
+    log_seek(db->log);
+    while (1){
+        struct Record *r = log_read(db->log);
+        if (!r) {
+            log_flag = 0;
+            return 0;
+        }
+        struct DBBlock *b;
+        if (*db->root != -1) {
+            b = read_block(db, r->page);
+        }
+        //printf("%p\n", b);
+        if (*db->root == -1 || !b || b->LSN < r->LSN) {
+            if (r->type == LOG_DELETE) {
+                delet(db, r->key);
+            } else {
+                put(db, r->key, r->data);
+            }
+        }
+    }
+    db->log->LSN++;
+    log_flag = 0;
+}
+
+/*Checkpoint functions*/
+void *Checkpoint_func(void *args)
+{
+    struct DB *db = args;
+    while(1) {
+        usleep(200000);
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+        pthread_mutex_lock(&db->mutex);
+        while (db->cacheListBegin != NULL) {
+            if (ISDIRTY(db->cacheListBegin)) {
+                write_block_indb(db, &db->cacheContainer[db->cacheListBegin->id], db->cacheIndex[db->cacheListBegin->id]);
+            }
+            remove_from_cache(db, db->cacheIndex[db->cacheListBegin->id], db->cacheListBegin);
+        }
+        write_dbinf(db);
+        int label = MAGIC_CONST;
+        fwrite(&label, sizeof(label), 1, db->log->fd);
+        fprintf(db->log->fd, "\n");
+        fflush(db->log->fd);
+        pthread_mutex_unlock(&db->mutex);
+        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    }
+}
+
+/*DB API*/
 int db_close(struct DB *db) {
 	return db->close(db);
 }
+
 
 int db_del(struct DB *db, void *key, size_t key_len) {
 	struct DBT keyt = {
@@ -31,6 +159,7 @@ int db_del(struct DB *db, void *key, size_t key_len) {
 	};
 	return db->del(db, &keyt);
 }
+
 
 int db_get(struct DB *db, void *key, size_t key_len,
 		void **val, size_t *val_len) {
@@ -44,6 +173,7 @@ int db_get(struct DB *db, void *key, size_t key_len,
 	*val_len = valt.size;
 	return rc;
 }
+
 
 int db_put(struct DB *db, void *key, size_t key_len,
 		void *val, size_t val_len) {
@@ -82,6 +212,10 @@ int block_free(struct DB *db, int index) {
     return 0;
 }
 
+int block_is_allocated(struct DB *db, int index) {
+    return db->pages[index / 8] >> (index % 8);
+}
+
 int free_var(struct DBBlock *block) {
     if (!block) {
         return -1;
@@ -106,7 +240,7 @@ int write_dbinf(struct DB *db)
 
 int offset_dbinf(struct DB *db)
 {
-    return sizeof(*db->root) + sizeof(db->conf) + sizeof(*db->pages) * db->conf.db_size / db->conf.chunk_size;
+    return sizeof(*db->root) + sizeof(db->conf) + db->conf.db_size / db->conf.chunk_size * sizeof(*db->pages);
 }
 
 /*
@@ -114,6 +248,7 @@ Functions for reading and writing blocks
 Node template:
     1 byte: isleaf
     4 bytes: size
+    4 bytes: LSN
     size * 4 + 4 bytes: links
     other bytes: 4 bytes - size of key
                     size of key bytes - key
@@ -121,34 +256,41 @@ Node template:
                     size of data bytes - data
 */
 int write_block_indb(struct DB *db, struct DBBlock *block, int page) {
-    unsigned hyp_size = sizeof(block->isleaf) + sizeof(block->size) +
+    unsigned hyp_size = sizeof(block->LSN) + sizeof(block->isleaf) + sizeof(block->size) +
                     (block->size + 1) * sizeof(*block->childs_pages);
     for (int i = 0; i < block->size; ++i) {
         hyp_size += block->keys[i].key.size + block->keys[i].data.size +
             sizeof(block->keys[i].key.size) + sizeof(block->keys[i].data.size);
     }
     if (hyp_size > db->conf.chunk_size) {
+        fprintf(stderr, "Error: Very big page %d\n", hyp_size);
         return -1;
     }
-    lseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);
-    write(db->f, &block->isleaf, sizeof(block->isleaf));
-    write(db->f, &block->size, sizeof(block->size));
+    lseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);//printf("Start write %d in %d\n", tell(db->f), page);
+    write(db->f, &block->isleaf, sizeof(block->isleaf));//printf("1 write %d in %d\n", tell(db->f), page);
+    write(db->f, &block->size, sizeof(block->size));//printf("2 write %d in %d\n", tell(db->f), page);
+    int start = tell(db->f);
+    write(db->f, &block->LSN, sizeof(block->LSN));//printf("3 write %d in %d\n", tell(db->f), page);
+    lseek(db->f, start + 4 - tell(db->f), SEEK_CUR);
     if (!block->isleaf) {
         write(db->f, block->childs_pages, sizeof(*block->childs_pages) * (block->size + 1));
-    }
+    }//printf("4 write %d in %d\n", tell(db->f), page);
     for (int i = 0; i < block->size; ++i) {
         struct DBT *field = &block->keys[i].key;
         write(db->f, &field->size, sizeof(field->size));
         write(db->f, field->data, field->size);
         field = &block->keys[i].data;
         write(db->f, &field->size, sizeof(field->size));
-        write(db->f, field->data, field->size);
-    }
+        write(db->f, field->data, field->size);//printf("5 + %d write %d in %d\n", i, tell(db->f), page);
+    }//printf("End write %d in %d\n", tell(db->f), page);
     return 0;
 }
 
 struct DBBlock *read_block(struct DB *db, int page)
 {
+    if (!block_is_allocated(db, page)) {
+        return NULL;
+    }
     struct cacheList *iter = index_in_cache(db, page);
     if (iter != NULL) {
         insert_element_in_front(db, iter);
@@ -157,9 +299,10 @@ struct DBBlock *read_block(struct DB *db, int page)
         return tmp;
     }
     struct DBBlock *block = calloc(sizeof(*block), 1);
-    lseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);
+    lseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);//printf("Start read %d in %d\n", tell(db->f), page);
     read(db->f, &block->isleaf, sizeof(block->isleaf));
     read(db->f, &block->size, sizeof(block->size));
+    read(db->f, &block->LSN, sizeof(block->LSN));
     if (!block->isleaf) {
         block->childs_pages = calloc(db->t * 2,
                                         sizeof(*block->childs_pages));
@@ -177,8 +320,8 @@ struct DBBlock *read_block(struct DB *db, int page)
         read(db->f, &field->size, sizeof(field->size));
         field->data = malloc(field->size);
         read(db->f, field->data, field->size);
-    }
-    if (db->pagesInCache < db->mem_size) {
+    }//printf("End read %d in %d\n", tell(db->f), page);
+    if (db->pagesInCache < db->conf.mem_size) {
         add_to_cache(db, block, page);
     } else {
         put_in_cache(db, block, page);
@@ -305,13 +448,24 @@ void remove_from_cache(struct DB *db, int index, struct cacheList *iter)
     }
 }
 
-int write_block(struct DB *db, struct DBBlock *block, int index)
+int write_block(struct DB *db, struct DBBlock *block, int index, enum RECORD_TYPE tp, struct DBT *key, struct DBT *data)
 {
+    pthread_mutex_lock(&db->mutex);
+    if (tp != EMPTY_RECORD && !log_flag) {
+        struct Record r;
+        r.type = tp;
+        r.page = index;
+        r.key = key;
+        if (r.type != LOG_DELETE) {
+            r.data = data;
+        }
+        block->LSN = log_write(db->log, &r);
+    }
     struct cacheList *iter = index_in_cache(db, index);
     if (iter != NULL) {
         update_in_cache(db, block, iter);
     } else {
-        if (db->pagesInCache < db->mem_size) {
+        if (db->pagesInCache < db->conf.mem_size) {
             add_to_cache(db, block, index);
         } else {
             put_in_cache(db, block, index);
@@ -319,6 +473,7 @@ int write_block(struct DB *db, struct DBBlock *block, int index)
     }
     SETPAGESTATE(index_in_cache(db, index), 1);
     update_ops(db);
+    pthread_mutex_unlock(&db->mutex);
     //write_block_indb(db, block, index);
     return 0;
 }
@@ -347,6 +502,7 @@ int split_child(struct DB *db, int xindex, int yindex, int iter)
     z->size = db->t - 1;
     z->keys = malloc(sizeof(*z->keys) * (2 * db->t - 1));
     z->childs_pages = malloc(sizeof(*z->childs_pages) * 2 * db->t);
+    z->LSN = -1;
     for (int i = 0; i < db->t - 1; ++i) {
         z->keys[i] = y->keys[i + db->t];
     }
@@ -388,11 +544,12 @@ int split_child(struct DB *db, int xindex, int yindex, int iter)
         x->childs_pages[0] = yindex;
         x->childs_pages[1] = zindex;
         x->keys[0] = y->keys[db->t - 1];
+        x->LSN = -1;
     }
     int result = xindex;
-    if (write_block(db, x, xindex) == -1) result = -1;
-    if (write_block(db, y, yindex) == -1) result = -1;
-    if (write_block(db, z, zindex) == -1) result = -1;
+    if (write_block(db, x, xindex, EMPTY_RECORD, NULL, NULL) == -1) result = -1;
+    if (write_block(db, y, yindex, EMPTY_RECORD, NULL, NULL) == -1) result = -1;
+    if (write_block(db, z, zindex, EMPTY_RECORD, NULL, NULL) == -1) result = -1;
     free_var(x);
     free_var(y);
     free_var(z);
@@ -401,7 +558,9 @@ int split_child(struct DB *db, int xindex, int yindex, int iter)
 
 int put_node(struct DB *db, int xindex, struct DBT *key, struct DBT *data)
 {
+    //printblock(db, xindex, 0);getchar();
     struct DBBlock *x;
+    enum RECORD_TYPE logtype = LOG_INSERT;
     if (xindex == -1) {
         xindex = block_alloc(db);
         x = malloc(sizeof(*x));
@@ -409,6 +568,7 @@ int put_node(struct DB *db, int xindex, struct DBT *key, struct DBT *data)
         x->isleaf = 1;
         x->keys = calloc(sizeof(*x->keys), 2 * db->t - 1);
         x->childs_pages = calloc(sizeof(*x->childs_pages), 2 * db->t);
+        x->LSN = -1;
     } else {
         x = read_block(db, xindex);
     }
@@ -426,6 +586,7 @@ int put_node(struct DB *db, int xindex, struct DBT *key, struct DBT *data)
     int i;
     for (i = x->size - 1; i >= 0 && keycmp(key, &x->keys[i].key) < 0; --i) {}
     if (i >= 0 && keycmp(key, &x->keys[i].key) == 0) {
+        logtype = LOG_REPLACE;
         x->keys[i].data = *data;
     } else {
         i = x->size;
@@ -452,12 +613,14 @@ int put_node(struct DB *db, int xindex, struct DBT *key, struct DBT *data)
                     i++;
                 }
             }
+            printf("%d %d\n", y->size, y->isleaf);
             free_var(y);
             put_node(db, x->childs_pages[i], key, data);
+            logtype = EMPTY_RECORD;
         }
     }
     int result = xindex;
-    if (write_block(db, x, xindex) == -1) result = -1;
+    if (write_block(db, x, xindex, logtype, key, data) == -1) result = -1;
     free_var(x);
     return result;
 }
@@ -492,7 +655,7 @@ int getmin(struct DB *db, int xindex, struct DBT *key) {
     return getmin(db, x->childs_pages[0], key);
 }
 
-int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node);
+int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node, int logflag);
 
 int rebuildleft(struct DB *db, int xindex, int i) {
     struct DBBlock *x = read_block(db, xindex);
@@ -514,9 +677,9 @@ int rebuildleft(struct DB *db, int xindex, int i) {
     zl->size--;
     y->size++;
     int result = 0;
-    if (write_block(db, x, xindex) == -1) result = -1;
-    if (write_block(db, y, yindex) == -1) result = -1;
-    if (write_block(db, zl, zlindex) == -1) result = -1;
+    if (write_block(db, x, xindex, EMPTY_RECORD, NULL, NULL) == -1) result = -1;
+    if (write_block(db, y, yindex, EMPTY_RECORD, NULL, NULL) == -1) result = -1;
+    if (write_block(db, zl, zlindex, EMPTY_RECORD, NULL, NULL) == -1) result = -1;
     free_var(x);
     free_var(y);
     free_var(zl);
@@ -543,9 +706,9 @@ int rebuildright(struct DB *db, int xindex, int i) {
     zr->size--;
     y->size++;
     int result = -1;
-    if (write_block(db, x, xindex) == -1) result = -1;
-    if (write_block(db, y, yindex) == -1) result = -1;
-    if (write_block(db, zr, zrindex) == -1) result = -1;
+    if (write_block(db, x, xindex, EMPTY_RECORD, NULL, NULL) == -1) result = -1;
+    if (write_block(db, y, yindex, EMPTY_RECORD, NULL, NULL) == -1) result = -1;
+    if (write_block(db, zr, zrindex, EMPTY_RECORD, NULL, NULL) == -1) result = -1;
     free_var(x);
     free_var(y);
     free_var(zr);
@@ -582,16 +745,16 @@ int mergesmallnodes(struct DB *db, int xindex, int iter) {
         xindex = yindex;
         result = yindex;
     } else {
-        if (write_block(db, x, xindex) == -1) result = -1;
+        if (write_block(db, x, xindex, EMPTY_RECORD, NULL, NULL) == -1) result = -1;
     }
-    if (write_block(db, y, yindex) == -1) result = -1;
+    if (write_block(db, y, yindex, EMPTY_RECORD, NULL, NULL) == -1) result = -1;
     free_var(x);
     free_var(y);
     free_var(z);
     return result;
 }
 
-int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
+int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node, int logflag) {
     if (xindex == -1) {
         return -1;
     }
@@ -606,7 +769,7 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
             for (; i < x->size; ++i) {
                 x->keys[i] = x->keys[i + 1];
             }
-            write_block(db, x, xindex);
+            write_block(db, x, xindex, LOG_TYPE(LOG_DELETE), &key, NULL);
             free_var(x);
             return xindex;
         }
@@ -616,10 +779,10 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
             struct DBKey tmpnd;
             struct DBT tmpk;
             getmax(db, yindex, &tmpk);
-            x->childs_pages[i] = delblock(db, yindex, tmpk, &tmpnd);
+            x->childs_pages[i] = delblock(db, yindex, tmpk, &tmpnd, 0);
             *node = x->keys[i];
             x->keys[i] = tmpnd;
-            write_block(db, x, xindex);
+            write_block(db, x, xindex, LOG_TYPE(LOG_DELETE), &key, NULL);
             free_var(x);
             free_var(y);
             return xindex;
@@ -630,10 +793,10 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
             struct DBKey tmpnd;
             struct DBT tmpk;
             getmin(db, zindex, &tmpk);
-            x->childs_pages[i + 1] = delblock(db, zindex, tmpk, &tmpnd);
+            x->childs_pages[i + 1] = delblock(db, zindex, tmpk, &tmpnd, 0);
             *node = x->keys[i];
             x->keys[i] = tmpnd;
-            write_block(db, x, xindex);
+            write_block(db, x, xindex, LOG_TYPE(LOG_DELETE), &key, NULL);
             free_var(x);
             free_var(z);
             free_var(y);
@@ -643,7 +806,7 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
         free_var(y);
         free_var(z);
         xindex = mergesmallnodes(db, xindex, i);
-        xindex = delblock(db, xindex, key, node);
+        xindex = delblock(db, xindex, key, node, logflag);
         return xindex;
     }
     if (x->isleaf) {
@@ -654,8 +817,8 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
     int yindex = x->childs_pages[i];
     struct DBBlock *y = read_block(db, yindex);
     if (y->size >= db->t) {
-        x->childs_pages[i] = delblock(db, yindex, key, node);
-        write_block(db, x, xindex);
+        x->childs_pages[i] = delblock(db, yindex, key, node, logflag);
+        write_block(db, x, xindex, EMPTY_RECORD, &key, NULL);
         free_var(y);
         free_var(x);
         return xindex;
@@ -669,8 +832,8 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
             rebuildleft(db, xindex, i);
             free_var(x);
             x = read_block(db, xindex);
-            x->childs_pages[i] = delblock(db, yindex, key, node);
-            write_block(db, x, xindex);
+            x->childs_pages[i] = delblock(db, yindex, key, node, logflag);
+            write_block(db, x, xindex, LOG_TYPE(LOG_DELETE), &key, NULL);
             free_var(x);
             free_var(zl);
             free_var(y);
@@ -683,8 +846,8 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
                 rebuildright(db, xindex, i);
                 free_var(x);
                 x = read_block(db, xindex);
-                x->childs_pages[i] = delblock(db, yindex, key, node);
-                write_block(db, x, xindex);
+                x->childs_pages[i] = delblock(db, yindex, key, node, logflag);
+                write_block(db, x, xindex, LOG_TYPE(LOG_DELETE), &key, NULL);
                 free_var(x);
                 free_var(zr);
                 free_var(y);
@@ -695,7 +858,7 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
         free_var(y);
         free_var(zl);
         xindex = mergesmallnodes(db, xindex, i - 1);
-        xindex = delblock(db, xindex, key, node);
+        xindex = delblock(db, xindex, key, node, logflag);
         return xindex;
     }
     if (i < x->size) {
@@ -705,8 +868,8 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
             rebuildright(db, xindex, i);
             free_var(x);
             x = read_block(db, xindex);
-            x->childs_pages[i] = delblock(db, yindex, key, node);
-            write_block(db, x, xindex);
+            x->childs_pages[i] = delblock(db, yindex, key, node, logflag);
+            write_block(db, x, xindex, LOG_TYPE(LOG_DELETE), &key, NULL);
             free_var(x);
             free_var(zr);
             free_var(y);
@@ -716,7 +879,7 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
         free_var(y);
         free_var(zr);
         xindex = mergesmallnodes(db, xindex, i);
-        xindex = delblock(db, xindex, key, node);
+        xindex = delblock(db, xindex, key, node, logflag);
         return xindex;
     }
     node->key.size = -1;
@@ -725,7 +888,7 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node) {
 
 int delet(struct DB *db, struct DBT *key) {
     struct DBKey *data = calloc(sizeof(*data), 1);
-    *db->root = delblock(db, *db->root, *key, data);
+    *db->root = delblock(db, *db->root, *key, data, 1);
     if (data->key.size == -1) {
         return 1;
     }
@@ -769,6 +932,9 @@ int get(struct DB *db, struct DBT *key, struct DBT *data)
 
 /*Close DB*/
 int close_db(struct DB *db) {
+    pthread_cancel(&db->logthread);
+    pthread_join(&db->logthread, NULL);
+    //Checkpoint_func(db);
     write_dbinf(db);
     close(db->f);
     free(db->pages);
@@ -781,14 +947,14 @@ int close_db(struct DB *db) {
 struct DB *dbcreate(const char *file, struct DBC conf)
 {
     char buf[1024];
-    sprintf(buf, "%s/db", file);
+    sprintf(buf, "%s\db", file);
     struct DB *res = calloc(sizeof(*res), 1);
-    res->f = open(buf, O_RDWR, 0666);
+    res->f = open(buf, O_RDWR | O_CREAT | O_TRUNC, 0666);
     //res->f = fopen(file, "w+");
     res->conf = conf;
-    res->mem_size = 100;
+    //res->mem_size = 100;
     res->pages = calloc(conf.db_size / conf.chunk_size, 1);
-    res->t = 25;
+    res->t = 2;
     res->root = malloc(sizeof(*res->root));
     *res->root = -1;
     res->put = &put;
@@ -796,27 +962,43 @@ struct DB *dbcreate(const char *file, struct DBC conf)
     res->del = &delet;
     res->close = &close_db;
     res->pagesInCache = 0;
-    res->cacheContainer = calloc(sizeof(*res->cacheContainer), res->mem_size);
-    res->cacheIndex = calloc(sizeof(int), res->mem_size);
+    res->cacheContainer = calloc(sizeof(*res->cacheContainer), res->conf.mem_size);
+    res->cacheIndex = calloc(sizeof(int), res->conf.mem_size);
     res->cacheListBegin = NULL;
     res->cacheListEnd = res->cacheListBegin;
+    res->log = log_open();
+    pthread_mutex_init(&res->mutex, NULL);
+    pthread_create(&res->logthread, NULL, Checkpoint_func, res);
+    write_dbinf(res);
     return res;
 }
 
 struct DB *dbopen(const char *file, struct DBC conf) {
     struct DB *res = malloc(sizeof(*res));
-    res->f = open(file, O_RDWR, 0666);
+    char buf[1024];
+    sprintf(buf, "%s\db", file);
+    res->f = open(buf, O_RDWR, 0666);
     lseek(res->f, 0, SEEK_SET);
     res->root = calloc(sizeof(*res->root), 1);
     read(res->f, res->root, sizeof(*res->root));
     read(res->f, &res->conf, sizeof(res->conf));
     res->pages = calloc(res->conf.db_size / res->conf.chunk_size, 1);
     read(res->f, res->pages, res->conf.db_size / res->conf.chunk_size * sizeof(*res->pages));
-    res->t = 25;
+    res->t = 2;
     res->put = &put;
     res->get = &get;
     res->del = &delet;
     res->close = &close_db;
+    res->pagesInCache = 0;
+    res->cacheContainer = calloc(sizeof(*res->cacheContainer), res->conf.mem_size);
+    res->cacheIndex = calloc(sizeof(int), res->conf.mem_size);
+    res->cacheListBegin = NULL;
+    res->cacheListEnd = res->cacheListBegin;
+    res->log = log_open();
+    pthread_mutex_init(&res->mutex, NULL);
+    log_recovery(res);
+    //pthread_create(&res->logthread, NULL, Checkpoint_func, res);
+    printblock(res, *res->root, 0);
     return res;
 }
 
@@ -831,7 +1013,6 @@ int printsize(struct DB *db, int xindex, int height)
         }
     }
     if (height == 0)  {
-        OK
         for (int i = 0; i < height; ++i) {
             printf("-");
         }
@@ -842,8 +1023,12 @@ int printsize(struct DB *db, int xindex, int height)
 
 /*Print tree*/
 void printblock(struct DB *db, int xindex, int height) {
-    if (xindex == -1) return;
+    if (xindex == -1) {
+        printf("Broken block!\n");
+        return;
+    }printf("page number: %d\n", xindex);
     struct DBBlock *x = read_block(db, xindex);
+    //printf("block pointer: %p\n", x);
     for (int i = 0; i < height; ++i) {
         printf("-");
     }
@@ -883,11 +1068,14 @@ void printblock(struct DB *db, int xindex, int height) {
     printf("\n");
 }
 
-/*int main(void) {
+int main(void)
+{
     struct DBC conf;
     conf.chunk_size = 4 * 1024;
     conf.db_size = 512 * 1024 * 1024;
-    struct DB *db = dbcreate("db", conf);
+    conf.mem_size = 2;
+    struct DB *db;
+    /*db = dbcreate("db", conf);
     db_put(db, "ololo", 5, "sos", 3);
     db_put(db, "lol", 3, "so slow", 7);
     db_put(db, "key 1", 5, "data 1", 6);
@@ -897,7 +1085,10 @@ void printblock(struct DB *db, int xindex, int height) {
     db_put(db, "kolhoz", 6, "galin", 5);
     db_put(db, "devil", 5, "evil", 4);
     db_put(db, "angel", 5, "good", 4);
-    db_put(db, "uk", 2, "rf", 2);
+    db_put(db, "uk", 2, "rf", 2);OK
+    int *p = 0;
+    *p = 300;*/
+    db = dbopen("db", conf);
     db_put(db, "size", 4, "toobig", 6);
     char *s[] = {"ololo", "lol", "key 1", "sos", "sneg", "300", "kolhoz", "devil", "angel", "uk", "size"};
     for (int i = 0; i < 30; ++i) {
@@ -907,10 +1098,8 @@ void printblock(struct DB *db, int xindex, int height) {
         db_get(db, s[k], strlen(s[k]), (void **)&str, &len);
         printf("%s: ", s[k]);
         puts(str);
-
-        //getchar();
     }
-    printf("\n");
+    printblock(db, *db->root, 0);
     db_del(db, "size", 4);
     db_del(db, "uk", 2);
     for (int i = 0; i < 30; ++i) {
@@ -934,4 +1123,5 @@ void printblock(struct DB *db, int xindex, int height) {
     db_del(db, "300", 3);
     printblock(db, *db->root, 0);
     db_close(db);
-}*/
+    return 0;
+}

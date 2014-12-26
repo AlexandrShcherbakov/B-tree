@@ -5,6 +5,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <time.h>
 
 /* check `man dbopen` */
 struct DBT {
@@ -23,7 +25,18 @@ struct DBC {
         size_t chunk_size;
 	/* For future uses - maximum cached memory size
 	 * 16MB by default */
-	    //size_t mem_size;
+	    size_t mem_size;
+};
+
+const int MAGIC_CONST = 0xdeadbeef;
+
+enum RECORD_TYPE {
+	LOG_INSERT = 'I', LOG_DELETE = 'D', LOG_REPLACE = 'R', EMPTY_RECORD
+};
+
+struct Log {
+	FILE *fd;
+	int LSN;
 };
 
 struct DB {
@@ -52,7 +65,10 @@ struct DB {
 	struct DBBlock *cacheContainer;
 	int *cacheIndex;
 	int pagesInCache;
-	int mem_size;
+	//int mem_size;
+	struct Log *log;
+	pthread_t logthread;
+	pthread_mutex_t mutex;
 }; /* Need for supporting multiple backends (HASH/BTREE) */
 
 struct DBKey {
@@ -60,9 +76,18 @@ struct DBKey {
     struct DBT data;
 };
 
+struct Record {
+	enum RECORD_TYPE type;
+	struct DBT *key;
+	struct DBT *data;
+	int page;
+	int LSN;
+};
+
 struct DBBlock {
     int *childs_pages;
     int size;
+    int LSN;
     char isleaf;
     struct DBKey *keys;
 };
