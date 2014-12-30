@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <time.h>
+#include <signal.h>
 
 /* check `man dbopen` */
 struct DBT {

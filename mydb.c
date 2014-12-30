@@ -8,9 +8,11 @@
 #define DELPAGE(x) (x->info = x->info | 1)
 #define ISDELETED(x) (x->info & 2)
 #define LOG_TYPE(x) (logflag ? x : EMPTY_RECORD)
+#define SLEEP_TIME 200000
 
 static int ops = 0;
 static log_flag = 0;
+static cycle_flag = 1;
 
 //Declaration of functions
 void put_in_cache(struct DB *db, struct DBBlock *block, int index);
@@ -123,26 +125,31 @@ int log_recovery (struct DB *db)
 }
 
 /*Checkpoint functions*/
+void checkpoint_realize(struct DB *db)
+{
+    while (db->cacheListBegin != NULL) {
+        if (ISDIRTY(db->cacheListBegin)) {
+            write_block_indb(db, &db->cacheContainer[db->cacheListBegin->id], db->cacheIndex[db->cacheListBegin->id]);
+            //OK
+        }
+        remove_from_cache(db, db->cacheIndex[db->cacheListBegin->id], db->cacheListBegin);
+    }
+    write_dbinf(db);
+    int label = MAGIC_CONST;
+    fwrite(&label, sizeof(label), 1, db->log->fd);
+    fprintf(db->log->fd, "\n");
+    fflush(db->log->fd);
+}
+
 void *Checkpoint_func(void *args)
 {
     struct DB *db = args;
-    while(1) {
-        usleep(200000);
-        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+    while(cycle_flag) {
+        usleep(SLEEP_TIME);
         pthread_mutex_lock(&db->mutex);
-        while (db->cacheListBegin != NULL) {
-            if (ISDIRTY(db->cacheListBegin)) {
-                write_block_indb(db, &db->cacheContainer[db->cacheListBegin->id], db->cacheIndex[db->cacheListBegin->id]);
-            }
-            remove_from_cache(db, db->cacheIndex[db->cacheListBegin->id], db->cacheListBegin);
-        }
-        write_dbinf(db);
-        int label = MAGIC_CONST;
-        fwrite(&label, sizeof(label), 1, db->log->fd);
-        fprintf(db->log->fd, "\n");
-        fflush(db->log->fd);
+        checkpoint_realize(db);
         pthread_mutex_unlock(&db->mutex);
-        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+        printf("%d\n", clock());
     }
 }
 
@@ -205,15 +212,20 @@ int block_alloc(struct DB *db) {
     return -1;
 }
 
-int block_free(struct DB *db, int index) {
-    db->pages[index / 8] = db->pages[index] & ~(1 << (index % 8));
+int block_free(struct DB *db, int index)
+{
+    db->pages[index / 8] = db->pages[index / 8] & ~(1 << (index % 8));
     //remove_from_cache(db, index, index_in_cache(db, index));
-    DELPAGE(index_in_cache(db, index));
+    struct cacheList *x = index_in_cache(db, index);
+    if (x) {
+        DELPAGE(x);
+    }
     return 0;
 }
 
 int block_is_allocated(struct DB *db, int index) {
-    return db->pages[index / 8] >> (index % 8);
+    //printf("%d, %d, %d\n", index / 8, (index % 8), (db->pages[index / 8] >> (index % 8)) & 1);
+    return (db->pages[index / 8] >> (index % 8)) & 1;
 }
 
 int free_var(struct DBBlock *block) {
@@ -268,10 +280,12 @@ int write_block_indb(struct DB *db, struct DBBlock *block, int page) {
     }
     lseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);//printf("Start write %d in %d\n", tell(db->f), page);
     write(db->f, &block->isleaf, sizeof(block->isleaf));//printf("1 write %d in %d\n", tell(db->f), page);
-    write(db->f, &block->size, sizeof(block->size));//printf("2 write %d in %d\n", tell(db->f), page);
     int start = tell(db->f);
     write(db->f, &block->LSN, sizeof(block->LSN));//printf("3 write %d in %d\n", tell(db->f), page);
     lseek(db->f, start + 4 - tell(db->f), SEEK_CUR);
+    write(db->f, &block->size, sizeof(block->size));//printf("2 write %d in %d\n", tell(db->f), page);
+    //int start = tell(db->f);
+    //lseek(db->f, start + 4 - tell(db->f), SEEK_CUR);
     if (!block->isleaf) {
         write(db->f, block->childs_pages, sizeof(*block->childs_pages) * (block->size + 1));
     }//printf("4 write %d in %d\n", tell(db->f), page);
@@ -288,7 +302,9 @@ int write_block_indb(struct DB *db, struct DBBlock *block, int page) {
 
 struct DBBlock *read_block(struct DB *db, int page)
 {
+    pthread_mutex_lock(&db->mutex);
     if (!block_is_allocated(db, page)) {
+        pthread_mutex_unlock(&db->mutex);
         return NULL;
     }
     struct cacheList *iter = index_in_cache(db, page);
@@ -296,13 +312,14 @@ struct DBBlock *read_block(struct DB *db, int page)
         insert_element_in_front(db, iter);
         struct DBBlock *tmp = calloc(sizeof(*tmp), 1);
         *tmp = db->cacheContainer[iter->id];
+        pthread_mutex_unlock(&db->mutex);
         return tmp;
     }
     struct DBBlock *block = calloc(sizeof(*block), 1);
     lseek(db->f, page * db->conf.chunk_size + offset_dbinf(db), SEEK_SET);//printf("Start read %d in %d\n", tell(db->f), page);
     read(db->f, &block->isleaf, sizeof(block->isleaf));
-    read(db->f, &block->size, sizeof(block->size));
     read(db->f, &block->LSN, sizeof(block->LSN));
+    read(db->f, &block->size, sizeof(block->size));
     if (!block->isleaf) {
         block->childs_pages = calloc(db->t * 2,
                                         sizeof(*block->childs_pages));
@@ -327,6 +344,7 @@ struct DBBlock *read_block(struct DB *db, int page)
         put_in_cache(db, block, page);
     }
     update_ops(db);
+    pthread_mutex_unlock(&db->mutex);
     return block;
 }
 
@@ -474,7 +492,6 @@ int write_block(struct DB *db, struct DBBlock *block, int index, enum RECORD_TYP
     SETPAGESTATE(index_in_cache(db, index), 1);
     update_ops(db);
     pthread_mutex_unlock(&db->mutex);
-    //write_block_indb(db, block, index);
     return 0;
 }
 
@@ -738,6 +755,7 @@ int mergesmallnodes(struct DB *db, int xindex, int iter) {
         x->childs_pages[i] = x->childs_pages[i + 1];
     }
     y->size = db->t * 2 - 1;
+    //printblock(db, yindex, 0);
     block_free(db, zindex);
     int result = xindex;
     if (x->size == 0) {
@@ -858,6 +876,7 @@ int delblock(struct DB *db, int xindex, struct DBT key, struct DBKey *node, int 
         free_var(y);
         free_var(zl);
         xindex = mergesmallnodes(db, xindex, i - 1);
+        //printblock(db, xindex, 0);
         xindex = delblock(db, xindex, key, node, logflag);
         return xindex;
     }
@@ -932,9 +951,12 @@ int get(struct DB *db, struct DBT *key, struct DBT *data)
 
 /*Close DB*/
 int close_db(struct DB *db) {
-    pthread_cancel(&db->logthread);
-    pthread_join(&db->logthread, NULL);
-    //Checkpoint_func(db);
+    //pthread_cancel(&db->logthread);
+    //cycle_flag = 0;
+    //pthread_join(&db->logthread, NULL);
+    pthread_kill(&db->logthread, SIGSEGV);
+    pthread_kill(&db->logthread, SIGSEGV);
+    checkpoint_realize(db);
     write_dbinf(db);
     close(db->f);
     free(db->pages);
@@ -967,7 +989,10 @@ struct DB *dbcreate(const char *file, struct DBC conf)
     res->cacheListBegin = NULL;
     res->cacheListEnd = res->cacheListBegin;
     res->log = log_open();
-    pthread_mutex_init(&res->mutex, NULL);
+    pthread_mutexattr_t mattr;
+    pthread_mutexattr_init(&mattr);
+    pthread_mutexattr_settype(&mattr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&res->mutex, &mattr);
     pthread_create(&res->logthread, NULL, Checkpoint_func, res);
     write_dbinf(res);
     return res;
@@ -1026,7 +1051,7 @@ void printblock(struct DB *db, int xindex, int height) {
     if (xindex == -1) {
         printf("Broken block!\n");
         return;
-    }printf("page number: %d\n", xindex);
+    }//printf("page number: %d\n", xindex);
     struct DBBlock *x = read_block(db, xindex);
     //printf("block pointer: %p\n", x);
     for (int i = 0; i < height; ++i) {
@@ -1071,11 +1096,11 @@ void printblock(struct DB *db, int xindex, int height) {
 int main(void)
 {
     struct DBC conf;
-    conf.chunk_size = 4 * 1024;
+    conf.chunk_size = 64 * 1024;
     conf.db_size = 512 * 1024 * 1024;
     conf.mem_size = 2;
     struct DB *db;
-    /*db = dbcreate("db", conf);
+    db = dbcreate("db", conf);
     db_put(db, "ololo", 5, "sos", 3);
     db_put(db, "lol", 3, "so slow", 7);
     db_put(db, "key 1", 5, "data 1", 6);
@@ -1085,12 +1110,13 @@ int main(void)
     db_put(db, "kolhoz", 6, "galin", 5);
     db_put(db, "devil", 5, "evil", 4);
     db_put(db, "angel", 5, "good", 4);
-    db_put(db, "uk", 2, "rf", 2);OK
+    db_put(db, "uk", 2, "rf", 2);
     int *p = 0;
-    *p = 300;*/
-    db = dbopen("db", conf);
+    //*p = 300;
+    //db = dbopen("db", conf);
     db_put(db, "size", 4, "toobig", 6);
-    char *s[] = {"ololo", "lol", "key 1", "sos", "sneg", "300", "kolhoz", "devil", "angel", "uk", "size"};
+    char *s[] = {"ololo", "lol", "key 1", "sos", "sneg", "300", "kolhoz",
+    "devil", "angel", "uk", "size"};
     for (int i = 0; i < 30; ++i) {
         int k = rand() % 11;
         char *str = malloc(300);
@@ -1099,10 +1125,9 @@ int main(void)
         printf("%s: ", s[k]);
         puts(str);
     }
-    printblock(db, *db->root, 0);
     db_del(db, "size", 4);
     db_del(db, "uk", 2);
-    for (int i = 0; i < 30; ++i) {
+    for (int i = 0; i < 300; ++i) {
         int k = rand() % 9;
         char *str = malloc(300);
         int len;
@@ -1115,7 +1140,6 @@ int main(void)
     db_del(db, "ololo", 5);
     db_del(db, "key 1", 5);
     db_del(db, "sos", 3);
-    //printblock(db, *db->root, 0);
     db_put(db, "uk", 2, "rf", 2);
     db_del(db, "angel", 5);
     db_del(db, "sneg", 4);
