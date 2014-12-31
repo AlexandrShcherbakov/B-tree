@@ -8,6 +8,8 @@
 #include <pthread.h>
 #include <time.h>
 #include <signal.h>
+#include <wait.h>
+#include <sys/types.h>
 
 /* check `man dbopen` */
 struct DBT {
